@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="SqlDialectMappings">
+    <file url="file://$PROJECT_DIR$/sql/quick_test.sql" dialect="PostgreSQL" />
     <file url="file://$PROJECT_DIR$/sql/views/indicators/v_indicator_change.sql" dialect="PostgreSQL" />
     <file url="file://$PROJECT_DIR$/sql/views/indicators/v_latest_indicator_values.sql" dialect="PostgreSQL" />
+    <file url="file://$PROJECT_DIR$/sql/views/recessions/v_economic_cycle_episodes.sql" dialect="PostgreSQL" />
     <file url="file://$PROJECT_DIR$/sql/views/recessions/v_recession_flag_current.sql" dialect="PostgreSQL" />
   </component>
 </project>
