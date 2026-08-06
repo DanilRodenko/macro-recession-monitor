@@ -26,6 +26,7 @@ Most beginner data projects use synthetic or stale datasets. This one intentiona
 | Database | PostgreSQL (local), pgAdmin 4 |
 | Dashboard #1 | Power BI Desktop (DAX, Power Query) |
 | Dashboard #2 & #3 | Tableau Desktop (JDBC → PostgreSQL) |
+| Dashboard #4 | Power BI Desktop, scikit-learn (`LogisticRegression`), Jupyter |
 | IDE | PyCharm Professional |
 
 ## Database structure
@@ -37,7 +38,9 @@ Database: `recession_monitor`
 - `fact_macro_observations` — monthly/quarterly indicator observations (50,214 rows)
 - `dim_tickers` — market tickers (`^GSPC`, `^VIX`)
 - `fact_market_prices` — daily market price observations (23,467 rows)
-
+- `fact_recession_probability` — model-generated recession probability time series
+  (monthly, 1990–present), written by the Dashboard #4 pipeline
+- 
 ### Indicators tracked
 T10Y2Y, T10Y3M, UNRATE, ICSA, UMCSENT, CFNAI, GDPC1, CPIAUCSL, USREC, SAHMREALTIME,
 HOUST, PERMIT, BAA10Y, NFCI, PAYEMS, INDPRO
@@ -140,7 +143,81 @@ can be compared on the same timeline.
   spreads, `NFCI`) can be at or near zero, or negative — dividing by a near-zero
   anchor produces unstable, misleading percentage swings.
 
-## Roadmap
+## Dashboard #4 — Recession Probability Model (Power BI)
 
-- **Dashboard #4** (Power BI, bonus) — ML-based recession probability model
-  (`sklearn` `LogisticRegression` using `SAHMREALTIME`).
+Files: `dashboards/powerbi/04_recession_probability_dashboard.pbix`,
+`notebooks/02_indicator_screening.ipynb`, `notebooks/03_feature_engineering.ipynb`,
+`notebooks/04_model_training.ipynb`, `notebooks/05_export_to_postgres.ipynb`
+
+A `scikit-learn` `LogisticRegression` model estimating the probability that a Sahm
+Rule recession signal (`SAHMREALTIME`) will trigger within the next 6 months, trained
+and run in Jupyter (Power BI has no Python/ML runtime), with predictions written back
+to PostgreSQL for the dashboard to consume.
+
+**Framing:** the model is best understood as a **financial vulnerability measure**,
+not an event predictor. Recessions are typically triggered by exogenous shocks
+(pandemics, geopolitical events, oil shocks) that no time-series model trained on
+historical macro data can foresee. What the model does estimate is how fragile the
+economy currently is — i.e. how likely a shock, if one occurs, is to tip conditions
+into recession — based on credit stress, labor market softening, and activity
+indicators. A low reading does not guarantee immunity to an external shock (COVID-19
+being the clearest historical example, discussed below).
+
+**Methodology:**
+1. **Indicator screening** (`02_indicator_screening.ipynb`) — before building a
+   multivariate model, all 13 eligible indicators (of 16 total; `UNRATE`,
+   `SAHMREALTIME`, and `USREC` excluded — see below) were tested individually via
+   univariate `LogisticRegression` with `TimeSeriesSplit` cross-validation, scored on
+   PR-AUC across three candidate horizons (3/6/12 months). `BAA10Y` and `CFNAI`
+   emerged as the strongest, most stable candidates.
+2. **Target construction** — `SAHMREALTIME` binarized at the standard 0.5 threshold,
+   then converted to a forward-looking window target: does the flag trigger at any
+   point in the next *h* months. h=6 was chosen as a middle ground — h=3 behaves
+   close to a nowcast with limited lead time; h=12 showed weaker signal across nearly
+   all indicators in screening and dilutes the target (a wider window blurs the
+   distinction between "imminent" and "still many months out").
+3. **Feature engineering** — final feature set: `BAA10Y` (credit spread), `CFNAI`
+   (broad economic activity), `ICSA` (initial jobless claims), `INDPRO` (industrial
+   production). `PAYEMS` was tested and dropped after a VIF check showed severe
+   multicollinearity with `INDPRO` (VIF > 245). A binarized yield-curve-inversion
+   feature (`T10Y2Y < 0`) was also tested and ultimately dropped: despite being a
+   classic recession predictor, at a fixed 6-month horizon it showed a
+   counterintuitive negative coefficient — most likely because the yield curve's
+   real-world lead time before a recession is long and inconsistent (roughly 6–24
+   months historically), so a 6-month window often closes before the effect
+   materializes.
+4. **Validation** — `TimeSeriesSplit` (walk-forward, expanding window) throughout, not
+   random splits. `class_weight='balanced'` used to address class imbalance (~25%
+   positive months) instead of synthetic resampling (SMOTE), which doesn't respect
+   temporal ordering. Evaluated on PR-AUC (not accuracy, given the imbalance), Brier
+   score (probability calibration), recall, and precision.
+
+**Result:** PR-AUC 0.76, ROC-AUC 0.78 on a chronological hold-out. All four final
+coefficients have signs consistent with economic intuition (rising credit spreads and
+jobless claims increase risk; stronger activity and production indices lower it).
+
+**Dashboard:**
+- Time series of the 6-month forward recession probability (1990–present), with
+  historical recession periods shaded for visual reference (from
+  `v_economic_cycle_episodes`, the same source used in Dashboards #2 and #3).
+- Current risk reading, shown as a standalone card, with accompanying methodology and
+  interpretation notes directly on the dashboard.
+
+## Data limitations — Dashboard #4
+
+- **No forecasting of the underlying indicators.** The model uses each indicator's
+  *known* value at time *t* to estimate risk over the following 6 months — it does
+  not forecast where `BAA10Y`, `CFNAI`, `ICSA`, or `INDPRO` themselves are headed.
+- **Small positive-class sample.** Only ~83 of 439 months (1990–present) are
+  recession months under the Sahm Rule. Some `TimeSeriesSplit` folds (e.g. the
+  2013–2019 expansion) contain very few positive examples, making per-fold PR-AUC
+  noisy for some indicators during screening — documented in
+  `02_indicator_screening.ipynb` rather than smoothed over.
+- **Yield curve inversion excluded.** See methodology above — a deliberate,
+  evidence-based exclusion after testing, not an oversight.
+- **Exogenous shocks are a blind spot.** COVID-19 is a clear example: it hit an
+  economy that was not showing significant fragility on most of these indicators, and
+  even a 6-month lookback window from several months prior does not fully capture it.
+  This is a structural limitation of any model built from historical macro time series,
+  not specific to this implementation.
+
